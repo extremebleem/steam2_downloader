@@ -25,6 +25,70 @@ const api = {
   },
 };
 
+// ---------------- preferences ----------------
+
+// Small choices about how the page is arranged — which chip is on, how the list is sorted — that
+// the server has no business knowing about and no place to keep. Anything the downloader itself
+// acts on belongs in settings.json instead, where the server can read it too.
+//
+// Cookies first, because localStorage is keyed by the whole origin, port included, and the app
+// steps to the next free port whenever its own is taken — which is exactly when a second copy is
+// open. A cookie on steam2downloader.localhost is not port-scoped and survives that.
+//
+// Two caveats, both of them the address's doing. The name and the numeric address printed beside
+// it are separate cookie jars, so preferences do not carry from one to the other. And Firefox
+// declines to store a cookie on the numeric one at all, which is what the fallback in set() is for.
+const prefs = {
+  // The cookie jar alone, s2_-prefixed keys only.
+  cookies() {
+    const out = {};
+    for (const c of document.cookie.split(';')) {
+      const i = c.indexOf('=');
+      if (i < 1) continue;
+      const k = c.slice(0, i).trim();
+      if (k.startsWith('s2_')) {
+        try { out[k.slice(3)] = decodeURIComponent(c.slice(i + 1)); } catch { /* keep going */ }
+      }
+    }
+    return out;
+  },
+
+  // localStorage underneath, cookies over the top: where both hold a key the cookie is the one
+  // that was written on the address being used now.
+  read() {
+    const out = {};
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k?.startsWith('s2_')) out[k.slice(3)] = localStorage.getItem(k);
+      }
+    } catch { /* a private window throws here rather than reporting itself empty */ }
+    return Object.assign(out, this.cookies());
+  },
+
+  // An empty string is a real stored value, not a missing one — the "All" chip is data-filter="".
+  // Whether a value is still *valid* is the caller's business; restorePrefs checks that below.
+  get(key, fallback) {
+    return this.all[key] ?? fallback;
+  },
+
+  // A year, so the preferences outlive the session they were set in. No Secure: this is http on
+  // loopback and a Secure cookie would simply never be stored.
+  set(key, value) {
+    this.all[key] = String(value);
+    document.cookie = `s2_${key}=${encodeURIComponent(value)}; path=/; max-age=31536000; samesite=lax`;
+
+    // Firefox refuses the cookie outright on the numeric address, and refuses it silently — the
+    // preference would simply never come back, with nothing to say why. localStorage is the worse
+    // store, since it goes down with a change of port, but where the cookie was declined the
+    // choice is not between the two stores, it is between one of them and forgetting.
+    if (this.cookies()[key] === undefined) {
+      try { localStorage.setItem('s2_' + key, value); } catch { /* private window */ }
+    }
+  },
+};
+prefs.all = prefs.read();
+
 // Decimal units: a MB is 10^6 bytes. The mirrors quote MiB in their listings and the parser still
 // reads that, but nothing is shown to a reader under a unit name that does not mean what it says.
 function bytes(n) {
@@ -1598,10 +1662,15 @@ $('#depotSearch').oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { state.depots.q = e.target.value.trim(); resetDepots(); }, 180);
 };
-$('#depotSort').onchange = (e) => { state.depots.sort = e.target.value; resetDepots(); };
+$('#depotSort').onchange = (e) => {
+  state.depots.sort = e.target.value;
+  prefs.set('sort', e.target.value);
+  resetDepots();
+};
 $('#depotDir').onclick = (e) => {
   state.depots.dir = state.depots.dir === 'asc' ? 'desc' : 'asc';
   e.target.textContent = state.depots.dir === 'asc' ? '↑' : '↓';
+  prefs.set('dir', state.depots.dir);
   resetDepots();
 };
 for (const b of document.querySelectorAll('#depotFilters button')) {
@@ -1609,6 +1678,7 @@ for (const b of document.querySelectorAll('#depotFilters button')) {
     for (const o of document.querySelectorAll('#depotFilters button')) o.classList.remove('on');
     b.classList.add('on');
     state.depots.filter = b.dataset.filter;
+    prefs.set('filter', b.dataset.filter);
     resetDepots();
   };
 }
@@ -1958,7 +2028,11 @@ function buildBox(build) {
 
 $('#modes').onclick = (e) => {
   const b = e.target.closest('button[data-mode]');
-  if (b) setMode(b.dataset.mode);
+  if (!b) return;
+  setMode(b.dataset.mode);
+  // Saved here rather than inside setMode: following an #app= link also switches mode, and being
+  // sent to a depot pack once should not be what the page opens in from then on.
+  prefs.set('mode', b.dataset.mode);
 };
 
 
@@ -2189,7 +2263,43 @@ async function applyView(view) {
 
 window.addEventListener('popstate', (e) => applyView(e.state ?? viewFromHash()));
 
+// ---------------- restoring preferences ----------------
+
+// Every value is checked against the controls actually on the page. A cookie naming a filter that
+// no longer has a chip would otherwise leave the list quietly filtered by a rule with nothing
+// switched on to show it — the worst kind of stale preference, because it looks like a bug in the
+// list rather than a setting.
+function restorePrefs() {
+  const d = state.depots;
+
+  const sorts = [...document.querySelectorAll('#depotSort option')].map((o) => o.value);
+  const sort = prefs.get('sort', d.sort);
+  if (sorts.includes(sort)) d.sort = sort;
+  $('#depotSort').value = d.sort;
+
+  // Anything that is not the one other legal value leaves the default alone.
+  if (prefs.get('dir', d.dir) === 'desc') d.dir = 'desc';
+  $('#depotDir').textContent = d.dir === 'asc' ? '↑' : '↓';
+
+  const chips = [...document.querySelectorAll('#depotFilters button')];
+  const filter = prefs.get('filter', d.filter);
+  const chip = chips.find((b) => b.dataset.filter === filter);
+  if (chip) {
+    d.filter = filter;
+    for (const b of chips) b.classList.toggle('on', b === chip);
+  }
+
+  const modes = [...document.querySelectorAll('#modes button')].map((b) => b.dataset.mode);
+  const mode = prefs.get('mode', 'depots');
+  setMode(modes.includes(mode) ? mode : 'depots');
+}
+
 // ---------------- loop ----------------
+
+// Before the first refreshState, which is what runs the initial resetDepots once the index is in:
+// the list is then built with the saved sort and filter instead of being built and immediately
+// rebuilt. A #depot= or #app= link still wins — applyView runs later and calls setMode itself.
+restorePrefs();
 
 refreshState();
 pollJobs();

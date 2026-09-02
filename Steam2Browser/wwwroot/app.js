@@ -71,7 +71,7 @@ const state = {
   },
   // Activity panel: it follows the work by itself, and a click takes control until the work
   // state changes again.
-  act: { jobs: false, extract: false, busy: false, manualOpen: null, jobList: [], extractList: [], installList: [] },
+  act: { jobs: false, extract: false, busy: false, manualOpen: null, jobList: [], extractList: [], installList: [], cancelling: new Set() },
   selected: null,
   detail: null,
   plan: null,
@@ -754,6 +754,7 @@ async function doPlan(depot, version, blobCrc, download) {
     state.plan = plan;
     renderPlan(plan, out);
     if (res.jobId) {
+      state.act.manualOpen = true;
       applyActivity(true);
       pollJobs();
     }
@@ -1237,6 +1238,7 @@ function extractHint(folderName) {
 async function doExtract(depot, version, blobCrc) {
   try {
     await api.post('/api/extract', { depot, version, blobCrc: blobCrc || null, filter: null });
+    state.act.manualOpen = true;
     applyActivity(true);
     pollExtract();
   } catch (e) {
@@ -1245,6 +1247,37 @@ async function doExtract(depot, version, blobCrc) {
 }
 
 // ---------------- activity ----------------
+
+// The backend writes plain sentences (Downloader.Say, Extractor.Say, Installs.Say), not levelled
+// log records (error, cancelled), so this reads the same fixed phrasing those methods already use rather than
+// inventing a protocol. Update this if those messages change.
+function logLevel(line) {
+  const msg = line.replace(/^\d{2}:\d{2}:\d{2}\s+/, ''); // drop the "HH:mm:ss  " timestamp
+
+  if (/\bFAILED\b/.test(msg)) return 'err';               // "FAILED <file>: <error>"
+  if (/\bfailed[:—]/i.test(msg)) return 'err';             // "failed: <error>" / "failed — <error>"
+  if (/\bwith \d+ (failure|failed)/i.test(msg)) return 'err'; // "finished with N failure(s)/failed depot(s)"
+
+  const doneCounts = /^done — .*?(\d+) failed/i.exec(msg); // "done — N files, M failed, ..."
+  if (doneCounts) return +doneCounts[1] > 0 ? 'err' : 'ok';
+
+  if (/^finished —/.test(msg) || /^installed into\b/.test(msg) || /: \d+ file\(s\)$/.test(msg)) return 'ok';
+
+  if (/\bcancelled\b/.test(msg) || /helper stopped:/.test(msg) || /not in the torrent\b/.test(msg)
+    || /off in Settings\b/.test(msg) || /\bno key\b/i.test(msg)) return 'warn';
+
+  return '';
+}
+
+// One <pre class="log"> whose lines are colour-coded individually, instead of one flat grey block. Makes everything more readable and good-looking.
+function renderLog(lines) {
+  const pre = el('pre', 'log');
+  for (const line of lines) {
+    const level = logLevel(line);
+    pre.append(el('span', 'logline' + (level ? ' ' + level : ''), line + '\n'));
+  }
+  return pre;
+}
 
 async function pollJobs() {
   let jobs;
@@ -1268,8 +1301,14 @@ function jobCard(j) {
   head.append(el('span', 'st ' + j.status, j.status));
 
   if (j.status === 'running') {
-    const c = el('button', 'ghost', 'Cancel');
-    c.onclick = () => api.post(`/api/jobs/${j.id}/cancel`).then(pollJobs);
+    const pending = state.act.cancelling.has(j.id);
+    const c = el('button', 'ghost', pending ? 'Cancelling…' : 'Cancel');
+    c.disabled = pending;
+    c.onclick = () => {
+      state.act.cancelling.add(j.id);
+      renderActivity();
+      api.post(`/api/jobs/${j.id}/cancel`).then(pollJobs);
+    };
     head.append(c);
   }
   if (j.status === 'done') {
@@ -1312,10 +1351,7 @@ function jobCard(j) {
     card.append(files);
   }
 
-  if (j.log?.length) {
-    const log = el('pre', 'log', j.log.slice(-40).join('\n'));
-    card.append(log);
-  }
+  if (j.log?.length) card.append(renderLog(j.log.slice(-40)));
 
   return card;
 }
@@ -1342,8 +1378,14 @@ function extractCard(r) {
     head.append(el('span', 'st ' + r.status, r.status));
 
     if (r.status === 'running') {
-      const c = el('button', 'ghost', 'Cancel');
-      c.onclick = () => api.post(`/api/extract/${r.id}/cancel`).then(pollExtract);
+      const pending = state.act.cancelling.has(r.id);
+      const c = el('button', 'ghost', pending ? 'Cancelling…' : 'Cancel');
+      c.disabled = pending;
+      c.onclick = () => {
+        state.act.cancelling.add(r.id);
+        renderActivity();
+        api.post(`/api/extract/${r.id}/cancel`).then(pollExtract);
+      };
       head.append(c);
     } else {
       const o = el('button', 'ghost', 'Open folder');
@@ -1369,7 +1411,7 @@ function extractCard(r) {
     ]) if (t) meta.append(el('span', null, t));
     card.append(meta);
 
-    card.append(el('pre', 'log', (r.log ?? []).slice(-200).join('\n')));
+    card.append(renderLog((r.log ?? []).slice(-200)));
     return card;
   }
 }
@@ -1394,6 +1436,13 @@ function renderActivity() {
 
   const jobs = (state.act.jobList ?? []).filter((j) => !owned.has('j' + j.id));
   const runs = (state.act.extractList ?? []).filter((r) => !owned.has('r' + r.id));
+
+  const stillRunning = new Set([
+    ...jobs.filter((j) => j.status === 'running').map((j) => j.id),
+    ...runs.filter((r) => r.status === 'running').map((r) => r.id),
+    ...installs.filter((i) => i.status === 'running').map((i) => i.id),
+  ]);
+  for (const id of state.act.cancelling) if (!stillRunning.has(id)) state.act.cancelling.delete(id);
 
   const running = jobs.filter((j) => j.status === 'running').length
                 + runs.filter((r) => r.status === 'running').length
@@ -1435,10 +1484,15 @@ function setActivityBusy(kind, value) {
   a[kind] = value;
 
   const busy = !!(a.jobs || a.extract);
-  if (busy !== a.busy) {
-    a.busy = busy;
-    a.manualOpen = null;   // the work changed state, so it gets the panel back
+  if (busy && !a.busy) {
+    // New work started: take the panel back from a manual collapse so it's visible again.
+    a.manualOpen = null;
+  } else if (!busy && a.busy) {
+    // some users may think that the activity block closing INSTANTLY could mean something went bad, keeping the block up and making the user go down gives the user
+    // a better view of what happend and if everything went correctly
+    a.manualOpen = true;
   }
+  a.busy = busy;
 
   applyActivity(a.manualOpen ?? busy);
 }
@@ -1941,6 +1995,7 @@ function buildBox(build) {
         depots: picked.map((p) => p.depot),
       });
       said.textContent = `installing ${picked.length} depot(s)`;
+      state.act.manualOpen = true;
       applyActivity(true);
       pollInstalls();
     } catch (e) {
@@ -1976,8 +2031,14 @@ function installCard(i) {
   head.append(el('span', 'st ' + i.status, i.status));
 
   if (i.status === 'running') {
-    const c = el('button', 'ghost', 'Cancel');
-    c.onclick = () => api.post(`/api/installs/${i.id}/cancel`).then(pollInstalls);
+    const pending = state.act.cancelling.has(i.id);
+    const c = el('button', 'ghost', pending ? 'Cancelling…' : 'Cancel');
+    c.disabled = pending;
+    c.onclick = () => {
+      state.act.cancelling.add(i.id);
+      renderActivity();
+      api.post(`/api/installs/${i.id}/cancel`).then(pollInstalls);
+    };
     head.append(c);
   }
   card.append(head);

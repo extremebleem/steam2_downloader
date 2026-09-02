@@ -485,6 +485,9 @@ pre.log {
   padding: 8px 10px; font-family: var(--mono); font-size: 11px; color: var(--dim);
   white-space: pre-wrap; word-break: break-word;
 }
+.log .logline.err { color: var(--bad); }
+.log .logline.warn { color: var(--warn); }
+.log .logline.ok { color: var(--good); }
 
 .muted { color: var(--dimmer); padding: 14px; text-align: center; font-size: 12px; }
 

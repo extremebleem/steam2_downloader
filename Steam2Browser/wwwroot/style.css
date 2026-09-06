@@ -423,14 +423,32 @@ td.delta.down { color: var(--warn); }
 /* ---------- activity ---------- */
 
 .activity {
-  height: 230px;
+  /* The drag sets --act-h; the fallback is the height this panel always had. Collapsing still
+     overrides it outright, so a resized panel keeps its size across a collapse and reopen. */
+  height: var(--act-h, 230px);
   transition: height .18s ease;
   display: flex; flex-direction: column;
   border-top: 1px solid #000;
   background: var(--bg-1);
   min-height: 0;
+  position: relative;
 }
 .activity.min { height: 34px; }
+/* A transition is right for the collapse arrow and wrong for a drag, where it puts the panel an
+   eighth of a second behind the pointer for the whole gesture. */
+.activity.resizing { transition: none; }
+
+/* Absolute rather than a flex child: a 6px row inside the box would push .acttabs out of the 34px
+   the collapsed panel is measured at. Straddling the border puts the target on the edge itself. */
+.actgrip {
+  position: absolute; top: -3px; left: 0; right: 0; height: 6px;
+  z-index: 2; cursor: ns-resize;
+}
+.actgrip:hover, body.act-resizing .actgrip { background: var(--accent); opacity: .5; }
+
+/* Held on the body so the cursor survives crossing the panel's children mid-drag, and so no text
+   in the depot list gets selected on the way past. */
+body.act-resizing { cursor: ns-resize; user-select: none; }
 
 .acttabs {
   display: flex; align-items: center; gap: 4px;

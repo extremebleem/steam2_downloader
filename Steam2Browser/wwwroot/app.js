@@ -70,8 +70,9 @@ const state = {
     lastNameCount: null,  // how many were named at the last in-place refresh
   },
   // Activity panel: it follows the work by itself, and a click takes control until the work
-  // state changes again.
-  act: { jobs: false, extract: false, busy: false, manualOpen: null, jobList: [], extractList: [], installList: [] },
+  // state changes again. `height` is what the panel opens to, in px — the drag writes it and
+  // collapsing leaves it alone, so a resized panel comes back the size it was. Seeded at wiring.
+  act: { jobs: false, extract: false, busy: false, manualOpen: null, height: null, jobList: [], extractList: [], installList: [] },
   selected: null,
   detail: null,
   plan: null,
@@ -1430,6 +1431,24 @@ function applyActivity(open) {
   btn.title = open ? 'Collapse' : 'Expand';
 }
 
+// The height the panel has always opened to, and the room the drag refuses to give away: below
+// ACT_MIN the list underneath the tab strip cannot show a single job, and ACT_KEEP is what is left
+// to the depot list so the panel can never be dragged over the whole window.
+const ACT_DEFAULT = 230;
+const ACT_MIN = 120;
+const ACT_KEEP = 220;
+
+const actMax = () => Math.max(ACT_MIN, window.innerHeight - ACT_KEEP);
+
+// Clamps on the way in, so a drag that keeps going past the limit does not build up an overshoot
+// that has to be dragged back through before the panel moves again.
+function setActHeight(px) {
+  const h = Math.round(Math.min(actMax(), Math.max(ACT_MIN, px)));
+  state.act.height = h;
+  $('#activity').style.setProperty('--act-h', h + 'px');
+  return h;
+}
+
 function setActivityBusy(kind, value) {
   const a = state.act;
   a[kind] = value;
@@ -1635,6 +1654,55 @@ $('#actToggle').onclick = () => {
   state.act.manualOpen = open;
   applyActivity(open);
 };
+
+setActHeight(ACT_DEFAULT);
+
+// Dragging the top edge. Pointer capture is what makes the gesture survive leaving the 6px strip —
+// without it the drag dies the moment the pointer outruns the panel, which at speed it always does.
+const actGrip = $('#actGrip');
+
+actGrip.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const a = $('#activity');
+
+  // Reaching for the edge of a collapsed panel means opening it, and it takes the panel off
+  // auto-follow exactly as the arrow does.
+  if (a.classList.contains('min')) {
+    state.act.manualOpen = true;
+    applyActivity(true);
+  }
+
+  // Measured from the remembered height rather than the box: expanding it a line above leaves the
+  // real height mid-transition at 34px, and the drag would start by jumping the panel shut.
+  const startY = e.clientY;
+  const startH = state.act.height ?? ACT_DEFAULT;
+
+  const move = (ev) => setActHeight(startH + (startY - ev.clientY));
+  const done = () => {
+    actGrip.removeEventListener('pointermove', move);
+    actGrip.removeEventListener('pointerup', done);
+    actGrip.removeEventListener('pointercancel', done);
+    a.classList.remove('resizing');
+    document.body.classList.remove('act-resizing');
+  };
+
+  actGrip.setPointerCapture(e.pointerId);
+  a.classList.add('resizing');
+  document.body.classList.add('act-resizing');
+
+  actGrip.addEventListener('pointermove', move);
+  actGrip.addEventListener('pointerup', done);
+  actGrip.addEventListener('pointercancel', done);
+  e.preventDefault();   // no text selection, no native drag
+});
+
+actGrip.ondblclick = () => setActHeight(ACT_DEFAULT);
+
+// A height chosen on a tall window would otherwise leave nothing of the depot list on a short one.
+// Only ever shrinks: growing the window back does not undo a size the reader picked by hand.
+window.addEventListener('resize', () => {
+  if (state.act.height > actMax()) setActHeight(state.act.height);
+});
 
 $('#openSettings').onclick = () => {
   const s = state.settings ?? {};

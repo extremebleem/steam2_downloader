@@ -518,9 +518,26 @@ public sealed class DownloadManager(ArchiveClient client, Settings settings, Tor
 
         job.Say("waiting for the torrent file list");
 
+        var sw = Stopwatch.StartNew();
+        long lastLogged = -1;
+
         var missing = await torrent.DownloadAsync(
             needed.Select(f => f.Entry).ToList(),
-            (done, _, _) => Interlocked.Exchange(ref job.DoneBytes, done),
+            (done, total, rateBps) =>
+            {
+                Interlocked.Exchange(ref job.DoneBytes, done);
+
+                // The swarm pulls pieces from many files in the selection at once, so there is no
+                // single "current file" to show progress for the way the mirror path can — this keeps the
+                // console showing that something is actually happening instead of sitting on the
+                // one-off "waiting for the torrent file list" line for the whole download.
+                if (done != lastLogged && sw.Elapsed.TotalSeconds >= 5)
+                {
+                    job.Say($"torrent: {Mb(done)} / {Mb(total)}" + (rateBps > 0 ? $" at {Mb((long)rateBps)}/s" : ""));
+                    lastLogged = done;
+                    sw.Restart();
+                }
+            },
             ct);
 
         var missingNames = missing.Select(e => e.FileName).ToHashSet(StringComparer.OrdinalIgnoreCase);

@@ -25,6 +25,70 @@ const api = {
   },
 };
 
+// ---------------- preferences ----------------
+
+// Small choices about how the page is arranged — which chip is on, how the list is sorted — that
+// the server has no business knowing about and no place to keep. Anything the downloader itself
+// acts on belongs in settings.json instead, where the server can read it too.
+//
+// Cookies first, because localStorage is keyed by the whole origin, port included, and the app
+// steps to the next free port whenever its own is taken — which is exactly when a second copy is
+// open. A cookie on steam2downloader.localhost is not port-scoped and survives that.
+//
+// Two caveats, both of them the address's doing. The name and the numeric address printed beside
+// it are separate cookie jars, so preferences do not carry from one to the other. And Firefox
+// declines to store a cookie on the numeric one at all, which is what the fallback in set() is for.
+const prefs = {
+  // The cookie jar alone, s2_-prefixed keys only.
+  cookies() {
+    const out = {};
+    for (const c of document.cookie.split(';')) {
+      const i = c.indexOf('=');
+      if (i < 1) continue;
+      const k = c.slice(0, i).trim();
+      if (k.startsWith('s2_')) {
+        try { out[k.slice(3)] = decodeURIComponent(c.slice(i + 1)); } catch { /* keep going */ }
+      }
+    }
+    return out;
+  },
+
+  // localStorage underneath, cookies over the top: where both hold a key the cookie is the one
+  // that was written on the address being used now.
+  read() {
+    const out = {};
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k?.startsWith('s2_')) out[k.slice(3)] = localStorage.getItem(k);
+      }
+    } catch { /* a private window throws here rather than reporting itself empty */ }
+    return Object.assign(out, this.cookies());
+  },
+
+  // An empty string is a real stored value, not a missing one — the "All" chip is data-filter="".
+  // Whether a value is still *valid* is the caller's business; restorePrefs checks that below.
+  get(key, fallback) {
+    return this.all[key] ?? fallback;
+  },
+
+  // A year, so the preferences outlive the session they were set in. No Secure: this is http on
+  // loopback and a Secure cookie would simply never be stored.
+  set(key, value) {
+    this.all[key] = String(value);
+    document.cookie = `s2_${key}=${encodeURIComponent(value)}; path=/; max-age=31536000; samesite=lax`;
+
+    // Firefox refuses the cookie outright on the numeric address, and refuses it silently — the
+    // preference would simply never come back, with nothing to say why. localStorage is the worse
+    // store, since it goes down with a change of port, but where the cookie was declined the
+    // choice is not between the two stores, it is between one of them and forgetting.
+    if (this.cookies()[key] === undefined) {
+      try { localStorage.setItem('s2_' + key, value); } catch { /* private window */ }
+    }
+  },
+};
+prefs.all = prefs.read();
+
 // Decimal units: a MB is 10^6 bytes. The mirrors quote MiB in their listings and the parser still
 // reads that, but nothing is shown to a reader under a unit name that does not mean what it says.
 function bytes(n) {
@@ -70,8 +134,10 @@ const state = {
     lastNameCount: null,  // how many were named at the last in-place refresh
   },
   // Activity panel: it follows the work by itself, and a click takes control until the work
-  // state changes again.
-  act: { jobs: false, extract: false, busy: false, manualOpen: null, jobList: [], extractList: [], installList: [], cancelling: new Set() },
+  // Activity panel: it follows the work by itself, and a click takes control until the work
+  // state changes again. `height` is what the panel opens to, in px — the drag writes it and
+  // collapsing leaves it alone, so a resized panel comes back the size it was. Seeded at wiring.
+  act: { jobs: false, extract: false, busy: false, manualOpen: null, height: null, jobList: [], extractList: [], installList: [], cancelling: new Set() },
   selected: null,
   detail: null,
   plan: null,
@@ -1249,7 +1315,7 @@ async function doExtract(depot, version, blobCrc) {
 // ---------------- activity ----------------
 
 // The backend writes plain sentences (Downloader.Say, Extractor.Say, Installs.Say), not levelled
-// log records (error, cancelled), so this reads the same fixed phrasing those methods already use rather than
+// log records, so this reads the same fixed phrasing those methods already use rather than
 // inventing a protocol. Update this if those messages change.
 function logLevel(line) {
   const msg = line.replace(/^\d{2}:\d{2}:\d{2}\s+/, ''); // drop the "HH:mm:ss  " timestamp
@@ -1269,7 +1335,7 @@ function logLevel(line) {
   return '';
 }
 
-// One <pre class="log"> whose lines are colour-coded individually, instead of one flat grey block. Makes everything more readable and good-looking.
+// One <pre class="log"> whose lines are colour-coded individually, instead of one flat grey block.
 function renderLog(lines) {
   const pre = el('pre', 'log');
   for (const line of lines) {
@@ -1437,6 +1503,9 @@ function renderActivity() {
   const jobs = (state.act.jobList ?? []).filter((j) => !owned.has('j' + j.id));
   const runs = (state.act.extractList ?? []).filter((r) => !owned.has('r' + r.id));
 
+  // "Cancelling…" only means something while the thing it refers to is still running — once a
+  // job actually stops (cancelled, done, or failed), drop it so the flag can't get stuck showing
+  // a state that already passed.
   const stillRunning = new Set([
     ...jobs.filter((j) => j.status === 'running').map((j) => j.id),
     ...runs.filter((r) => r.status === 'running').map((r) => r.id),
@@ -1479,6 +1548,24 @@ function applyActivity(open) {
   btn.title = open ? 'Collapse' : 'Expand';
 }
 
+// The height the panel has always opened to, and the room the drag refuses to give away: below
+// ACT_MIN the list underneath the tab strip cannot show a single job, and ACT_KEEP is what is left
+// to the depot list so the panel can never be dragged over the whole window.
+const ACT_DEFAULT = 230;
+const ACT_MIN = 120;
+const ACT_KEEP = 220;
+
+const actMax = () => Math.max(ACT_MIN, window.innerHeight - ACT_KEEP);
+
+// Clamps on the way in, so a drag that keeps going past the limit does not build up an overshoot
+// that has to be dragged back through before the panel moves again.
+function setActHeight(px) {
+  const h = Math.round(Math.min(actMax(), Math.max(ACT_MIN, px)));
+  state.act.height = h;
+  $('#activity').style.setProperty('--act-h', h + 'px');
+  return h;
+}
+
 function setActivityBusy(kind, value) {
   const a = state.act;
   a[kind] = value;
@@ -1488,8 +1575,9 @@ function setActivityBusy(kind, value) {
     // New work started: take the panel back from a manual collapse so it's visible again.
     a.manualOpen = null;
   } else if (!busy && a.busy) {
-    // some users may think that the activity block closing INSTANTLY could mean something went bad, keeping the block up and making the user go down gives the user
-    // a better view of what happend and if everything went correctly
+    // Everything just finished. Snapping shut here read as "something broke" even when it
+    // hadn't — keep the panel open so the result is actually readable, and leave it to the
+    // arrow (or the next job) to close it.
     a.manualOpen = true;
   }
   a.busy = busy;
@@ -1652,10 +1740,15 @@ $('#depotSearch').oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { state.depots.q = e.target.value.trim(); resetDepots(); }, 180);
 };
-$('#depotSort').onchange = (e) => { state.depots.sort = e.target.value; resetDepots(); };
+$('#depotSort').onchange = (e) => {
+  state.depots.sort = e.target.value;
+  prefs.set('sort', e.target.value);
+  resetDepots();
+};
 $('#depotDir').onclick = (e) => {
   state.depots.dir = state.depots.dir === 'asc' ? 'desc' : 'asc';
   e.target.textContent = state.depots.dir === 'asc' ? '↑' : '↓';
+  prefs.set('dir', state.depots.dir);
   resetDepots();
 };
 for (const b of document.querySelectorAll('#depotFilters button')) {
@@ -1663,6 +1756,7 @@ for (const b of document.querySelectorAll('#depotFilters button')) {
     for (const o of document.querySelectorAll('#depotFilters button')) o.classList.remove('on');
     b.classList.add('on');
     state.depots.filter = b.dataset.filter;
+    prefs.set('filter', b.dataset.filter);
     resetDepots();
   };
 }
@@ -1689,6 +1783,55 @@ $('#actToggle').onclick = () => {
   state.act.manualOpen = open;
   applyActivity(open);
 };
+
+setActHeight(ACT_DEFAULT);
+
+// Dragging the top edge. Pointer capture is what makes the gesture survive leaving the 6px strip —
+// without it the drag dies the moment the pointer outruns the panel, which at speed it always does.
+const actGrip = $('#actGrip');
+
+actGrip.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const a = $('#activity');
+
+  // Reaching for the edge of a collapsed panel means opening it, and it takes the panel off
+  // auto-follow exactly as the arrow does.
+  if (a.classList.contains('min')) {
+    state.act.manualOpen = true;
+    applyActivity(true);
+  }
+
+  // Measured from the remembered height rather than the box: expanding it a line above leaves the
+  // real height mid-transition at 34px, and the drag would start by jumping the panel shut.
+  const startY = e.clientY;
+  const startH = state.act.height ?? ACT_DEFAULT;
+
+  const move = (ev) => setActHeight(startH + (startY - ev.clientY));
+  const done = () => {
+    actGrip.removeEventListener('pointermove', move);
+    actGrip.removeEventListener('pointerup', done);
+    actGrip.removeEventListener('pointercancel', done);
+    a.classList.remove('resizing');
+    document.body.classList.remove('act-resizing');
+  };
+
+  actGrip.setPointerCapture(e.pointerId);
+  a.classList.add('resizing');
+  document.body.classList.add('act-resizing');
+
+  actGrip.addEventListener('pointermove', move);
+  actGrip.addEventListener('pointerup', done);
+  actGrip.addEventListener('pointercancel', done);
+  e.preventDefault();   // no text selection, no native drag
+});
+
+actGrip.ondblclick = () => setActHeight(ACT_DEFAULT);
+
+// A height chosen on a tall window would otherwise leave nothing of the depot list on a short one.
+// Only ever shrinks: growing the window back does not undo a size the reader picked by hand.
+window.addEventListener('resize', () => {
+  if (state.act.height > actMax()) setActHeight(state.act.height);
+});
 
 $('#openSettings').onclick = () => {
   const s = state.settings ?? {};
@@ -2013,7 +2156,11 @@ function buildBox(build) {
 
 $('#modes').onclick = (e) => {
   const b = e.target.closest('button[data-mode]');
-  if (b) setMode(b.dataset.mode);
+  if (!b) return;
+  setMode(b.dataset.mode);
+  // Saved here rather than inside setMode: following an #app= link also switches mode, and being
+  // sent to a depot pack once should not be what the page opens in from then on.
+  prefs.set('mode', b.dataset.mode);
 };
 
 
@@ -2250,7 +2397,43 @@ async function applyView(view) {
 
 window.addEventListener('popstate', (e) => applyView(e.state ?? viewFromHash()));
 
+// ---------------- restoring preferences ----------------
+
+// Every value is checked against the controls actually on the page. A cookie naming a filter that
+// no longer has a chip would otherwise leave the list quietly filtered by a rule with nothing
+// switched on to show it — the worst kind of stale preference, because it looks like a bug in the
+// list rather than a setting.
+function restorePrefs() {
+  const d = state.depots;
+
+  const sorts = [...document.querySelectorAll('#depotSort option')].map((o) => o.value);
+  const sort = prefs.get('sort', d.sort);
+  if (sorts.includes(sort)) d.sort = sort;
+  $('#depotSort').value = d.sort;
+
+  // Anything that is not the one other legal value leaves the default alone.
+  if (prefs.get('dir', d.dir) === 'desc') d.dir = 'desc';
+  $('#depotDir').textContent = d.dir === 'asc' ? '↑' : '↓';
+
+  const chips = [...document.querySelectorAll('#depotFilters button')];
+  const filter = prefs.get('filter', d.filter);
+  const chip = chips.find((b) => b.dataset.filter === filter);
+  if (chip) {
+    d.filter = filter;
+    for (const b of chips) b.classList.toggle('on', b === chip);
+  }
+
+  const modes = [...document.querySelectorAll('#modes button')].map((b) => b.dataset.mode);
+  const mode = prefs.get('mode', 'depots');
+  setMode(modes.includes(mode) ? mode : 'depots');
+}
+
 // ---------------- loop ----------------
+
+// Before the first refreshState, which is what runs the initial resetDepots once the index is in:
+// the list is then built with the saved sort and filter instead of being built and immediately
+// rebuilt. A #depot= or #app= link still wins — applyView runs later and calls setMode itself.
+restorePrefs();
 
 refreshState();
 pollJobs();

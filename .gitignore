@@ -32,7 +32,8 @@ dats.sha256
 blobs.sha256
 
 # catalog snapshot embedded at build time — CI regenerates it on every release
-Steam2Browser/index.bin
+# index.bin is committed now: the mirrors it was built from are gone, so it
+# cannot be regenerated. It is the catalog.
 
 .vs/
 .idea/

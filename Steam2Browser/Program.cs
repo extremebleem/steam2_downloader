@@ -34,6 +34,8 @@ var client = new ArchiveClient(http)
 };
 var loader = new IndexLoader(client, settings);
 var torrent = new TorrentSource(settings);
+// The swarm is the archive now, so the client fetches through it.
+client.Torrent = torrent;
 // Built before the download manager, which uses it to work out which dats a chain really needs.
 var changes = new ChangeIndex(client, settings);
 var downloads = new DownloadManager(client, settings, torrent, changes);
@@ -456,17 +458,21 @@ app.MapPost("/api/mirrors/test", async (CancellationToken ct) =>
     return Results.Ok(Mirrors.All.Select(m => new { m.Id, m.SpeedBps, m.TtfbMs, m.Reachable, m.Error }));
 });
 
+// Both of these fetched from the mirrors, and both are gone with them. There is nothing to refresh
+// against either: the archive stopped changing when the site closed, so the snapshot shipped with
+// the app is not a stale copy of the catalog, it is the catalog. Reloading from disk is still
+// allowed, since that is local and costs nothing.
 app.MapPost("/api/index/reload", (ReloadRequest req) =>
 {
-    _ = loader.LoadAsync(req.Refresh, req.Sizes);
+    if (req.Refresh)
+        return Results.BadRequest(new { error = "the mirrors are gone — the built-in catalog is the only one there is" });
+
+    _ = loader.LoadAsync(refreshIndex: false, req.Sizes);
     return Results.Ok(new { ok = true });
 });
 
 app.MapPost("/api/index/sizes", () =>
-{
-    _ = loader.LoadSizesAsync(force: true);
-    return Results.Ok(new { ok = true });
-});
+    Results.BadRequest(new { error = "sizes came from the mirrors' directory listings and are now built in" }));
 
 app.MapPost("/api/names/start", (bool? retryFailed) =>
 {

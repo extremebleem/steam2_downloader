@@ -32,27 +32,18 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Build catalog snapshot
-        shell: pwsh
-        # Pulls the index and directory listings once and compacts them to ~4.5 MB, which the
-        # publish step below embeds. Best effort: if the mirrors are unreachable from the runner
-        # the release still ships, and the app falls back to fetching the index itself.
-        continue-on-error: true
-        run: |
-          dotnet run --project Steam2Browser/Steam2Browser.csproj -c Release `
-            -- --build-index Steam2Browser/index.bin --with-sizes
-
-      - name: Report snapshot
+      # The snapshot used to be built here, from the mirrors, on every run. They have closed, so it
+      # is committed instead and this only checks that it is there. Missing, it cannot be recreated
+      # and the release would have no catalog at all, so that is a build failure rather than a note.
+      - name: Check the catalog snapshot
         shell: pwsh
         run: |
-          if (Test-Path Steam2Browser/index.bin) {
-            $mb = (Get-Item Steam2Browser/index.bin).Length / 1MB
-            Write-Host ("embedding a catalog snapshot of {0:N2} MB" -f $mb)
-            "SNAPSHOT=yes" | Out-File -Append $env:GITHUB_ENV
-          } else {
-            Write-Host 'no snapshot — the app will fetch the index on first run'
-            "SNAPSHOT=no" | Out-File -Append $env:GITHUB_ENV
+          if (-not (Test-Path Steam2Browser/index.bin)) {
+            throw 'Steam2Browser/index.bin is missing. It is the catalog and cannot be rebuilt: the mirrors it came from are gone.'
           }
+          $mb = (Get-Item Steam2Browser/index.bin).Length / 1MB
+          Write-Host ("embedding the catalog snapshot, {0:N2} MB" -f $mb)
+          "SNAPSHOT=yes" | Out-File -Append $env:GITHUB_ENV
 
       # A plain publish: the executable with its runtime beside it, not a single file.
       #

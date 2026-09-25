@@ -824,6 +824,35 @@ public sealed class TorrentSource(Settings settings)
     /// Fetches exactly the given files from the swarm. Returns the entries it could not find in the
     /// torrent, which the caller should fall back to HTTP for.
     /// </summary>
+    /// <summary>
+    /// A file's length straight out of the torrent metadata, or null if the torrent has no such
+    /// file or has not been read yet. No request is made; the file list carries every length.
+    /// </summary>
+    public long? TryGetLength(string relPath)
+        => _byArchivePath.TryGetValue(relPath, out var f) ? f.Length : null;
+
+    /// <summary>
+    /// One file's bytes, from the archive if it is already there and from the swarm if not.
+    ///
+    /// This is what the planner, the version history and the depot namer used to get over HTTP.
+    /// With the mirrors gone the swarm is the only place left to ask, and they ask for blobs, which
+    /// are tens of kilobytes — small enough that fetching one is a reasonable thing to wait for.
+    ///
+    /// A file already on disk is read from disk. That matters more than it looks: resolving a chain
+    /// walks a depot's whole blob history, and after the first pass almost all of it is local.
+    /// </summary>
+    public async Task<byte[]> GetBytesAsync(Entry entry, CancellationToken ct = default)
+    {
+        string local = Path.Combine(settings.DataDir, entry.DirName, entry.FileName);
+        if (File.Exists(local)) return await File.ReadAllBytesAsync(local, ct);
+
+        var missing = await DownloadAsync([entry], null, ct);
+        if (missing.Count > 0 || !File.Exists(local))
+            throw new IOException($"the swarm did not supply {entry.FileName}");
+
+        return await File.ReadAllBytesAsync(local, ct);
+    }
+
     public async Task<List<Entry>> DownloadAsync(
         IReadOnlyList<Entry> wanted,
         Action<long, long, double>? onProgress,

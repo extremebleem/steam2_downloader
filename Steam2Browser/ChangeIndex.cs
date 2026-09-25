@@ -537,7 +537,7 @@ public sealed class ChangeIndex(ArchiveClient client, Settings settings)
                         string path = PathOf(blob);
                         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-                        byte[] bytes = await client.GetBytesAsync(blob.RelPath);
+                        byte[] bytes = await client.GetBytesAsync(blob);
 
                         string temp = path + ".part";
                         await File.WriteAllBytesAsync(temp, bytes);
@@ -611,7 +611,7 @@ public sealed class ChangeIndex(ArchiveClient client, Settings settings)
                         string path = PathOf(blob);
                         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-                        byte[] bytes = await client.GetBytesAsync(blob.RelPath);
+                        byte[] bytes = await client.GetBytesAsync(blob);
 
                         // Written aside and moved into place: a reader polling this depot must
                         // never see a half-written blob. One that did got decoded as a version

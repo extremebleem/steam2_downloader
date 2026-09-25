@@ -28,15 +28,18 @@ public sealed class Mirror
 public static class Mirrors
 {
     /// <summary>
-    /// The three HTTP mirrors serve byte-identical content (same ETag / Content-Length /
-    /// Last-Modified). Schemes differ and are not interchangeable: de answers only on https, ro and
-    /// us only on http. The fourth entry is the BitTorrent swarm, which carries the same 13.32 TB.
+    /// The swarm, and nothing else.
+    ///
+    /// There were three HTTP mirrors at de/ro/us.steam2.download serving byte-identical content.
+    /// The site has closed and the domain no longer resolves at all, so every one of them is a
+    /// connection failure now rather than a slow host worth racing. The archive survives only as the
+    /// torrent, which carries the same 13.32 TB.
+    ///
+    /// The list is kept as a list, and the code that picks between entries is kept with it, because
+    /// nothing says another host cannot appear later.
     /// </summary>
     public static readonly Mirror[] All =
     [
-        new() { Id = "de", Name = "Germany", Region = "EU", BaseUrl = "https://de.steam2.download" },
-        new() { Id = "ro", Name = "Romania", Region = "EU", BaseUrl = "http://ro.steam2.download" },
-        new() { Id = "us", Name = "United States", Region = "NA", BaseUrl = "http://us.steam2.download" },
         new() { Id = "torrent", Name = "BitTorrent swarm", Region = "P2P", BaseUrl = "", IsTorrent = true },
     ];
 

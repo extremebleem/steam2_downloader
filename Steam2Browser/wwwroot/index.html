@@ -28,12 +28,6 @@
     <span class="hint" id="fileSearchNote"></span>
   </div>
 
-  <div class="mirror">
-    <label>Mirror</label>
-    <select id="mirrorSelect"></select>
-    <button id="testMirrors" class="ghost" title="Download 4 MB from each mirror and compare">Test speed</button>
-  </div>
-
   <button id="seedBox" class="seed" title="Sharing what you have downloaded back to the swarm">
     <i></i><span id="seedText">…</span>
   </button>
@@ -251,8 +245,9 @@
     </label>
 
     <div class="dlgrow">
-      <button id="reloadIndex" type="button" class="ghost">Re-download index</button>
-      <button id="reloadSizes" type="button" class="ghost">Refresh sizes</button>
+      <span class="hint">The catalog is built into the app. The mirrors it used to be fetched
+        from have closed, and the archive stopped changing with them, so there is nothing left to
+        refresh it against.</span>
     </div>
 
     <div class="updbox">

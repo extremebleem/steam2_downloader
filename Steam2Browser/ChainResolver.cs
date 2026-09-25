@@ -262,7 +262,7 @@ public static class ChainResolver
     {
         foreach (var c in candidates)
         {
-            long len = await client.GetLengthAsync(c.RelPath, ct);
+            long len = await client.GetLengthAsync(c, ct);
             if (len == wantedSize) return c;
         }
         return null;
@@ -277,6 +277,6 @@ public static class ChainResolver
             try { return await File.ReadAllBytesAsync(local, ct); }
             catch (IOException) { /* fall through to the network */ }
         }
-        return await client.GetBytesAsync(blob.RelPath, ct);
+        return await client.GetBytesAsync(blob, ct);
     }
 }

@@ -124,6 +124,38 @@ public sealed class ArchiveClient(HttpClient http)
                 yield return m;
     }
 
+    /// <summary>
+    /// The swarm, once it exists. Set after construction because the torrent engine is built after
+    /// this client and needs it.
+    /// </summary>
+    public TorrentSource? Torrent { get; set; }
+
+    /// <summary>
+    /// One archive file's bytes, from wherever the archive currently lives.
+    ///
+    /// Takes the entry rather than a path because the swarm needs to know which file of the torrent
+    /// is meant and what its hash should be, neither of which a relative path carries. The HTTP
+    /// route below is left in place and is what this falls back to if a host is ever configured
+    /// again; today there is none, so every call goes to the swarm.
+    /// </summary>
+    public Task<byte[]> GetBytesAsync(Entry entry, CancellationToken ct = default)
+        => Torrent is { } t && Primary.IsTorrent
+            ? t.GetBytesAsync(entry, ct)
+            : GetBytesAsync(entry.RelPath, ct);
+
+    /// <summary>
+    /// A file's exact length.
+    ///
+    /// The torrent states the length of all 116 346 files in its own metadata, so with the swarm as
+    /// the source this is answered from memory: no request, no waiting, and exact rather than the
+    /// approximation the directory listings used to give. It is what tells two dats of a forked
+    /// version apart, so being exact is the whole point of it.
+    /// </summary>
+    public Task<long> GetLengthAsync(Entry entry, CancellationToken ct = default)
+        => Torrent is { } t && Primary.IsTorrent && t.TryGetLength(entry.RelPath) is { } len
+            ? Task.FromResult(len)
+            : GetLengthAsync(entry.RelPath, ct);
+
     public async Task<byte[]> GetBytesAsync(string relPath, CancellationToken ct = default)
     {
         Exception? last = null;

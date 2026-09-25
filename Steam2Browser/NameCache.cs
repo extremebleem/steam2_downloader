@@ -294,7 +294,7 @@ public sealed class NameCache(ArchiveClient client, HttpClient http, LabelSource
 
         try
         {
-            byte[] bytes = await client.GetBytesAsync(blob.RelPath, ct);
+            byte[] bytes = await client.GetBytesAsync(blob, ct);
 
             // The same blob answers both questions, so read the encryption flag while it is here.
             bool? encrypted = ChecksumTable.AnyEncrypted(bytes);

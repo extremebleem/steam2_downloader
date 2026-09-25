@@ -157,8 +157,8 @@ public sealed class DownloadManager(ArchiveClient client, Settings settings, Tor
 
         try
         {
-            // Picking the swarm as the mirror means the whole selection comes from it, and only what
-            // it cannot supply falls back to HTTP.
+            // The swarm is the archive: the whole selection comes from it, and there is nothing
+            // behind it any more. The HTTP mirrors this used to fall back to have closed.
             //
             // Inside the try, because it is the one part of a download that can fail before any
             // request is made: with the engine switched off it threw, the throw missed the handler
@@ -166,23 +166,29 @@ public sealed class DownloadManager(ArchiveClient client, Settings settings, Tor
             // as long as the app stayed open.
             if (client.Primary.IsTorrent)
             {
-                // The engine can be off while the swarm is still the chosen mirror — the two are
-                // separate settings. HTTP is what that choice degrades to; failing every download
-                // until they notice the mirror box is not a reasonable answer.
+                // Said plainly rather than left to fail file by file. With no mirrors left, the
+                // engine being off is not a degraded mode, it is no source at all.
                 if (!settings.TorrentEnabled)
                 {
-                    job.Say("the torrent engine is off in Settings — downloading from the mirror instead");
+                    job.Status = "failed";
+                    job.Error = "the torrent engine is switched off in Settings";
+                    job.Say($"failed: {job.Error}, and the HTTP mirrors it used to fall back to have closed");
+                    job.FinishedUtc = DateTime.UtcNow;
+                    return;
                 }
-                else
+
+                ordered = await ViaTorrentAsync(job, ordered, ct);
+                if (ordered.Count == 0)
                 {
-                    ordered = await ViaTorrentAsync(job, ordered, ct);
-                    if (ordered.Count == 0)
-                    {
-                        Finish(job);
-                        return;
-                    }
-                    job.Say($"{ordered.Count} file(s) are not in the torrent — fetching those over HTTP");
+                    Finish(job);
+                    return;
                 }
+
+                job.Status = "failed";
+                job.Error = $"the swarm could not supply {ordered.Count} file(s)";
+                job.Say($"failed: {job.Error} — nobody sharing them is online, so try again later");
+                job.FinishedUtc = DateTime.UtcNow;
+                return;
             }
 
             if (settings.PhasedDownloads)

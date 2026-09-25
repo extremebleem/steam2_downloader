@@ -225,33 +225,12 @@ function applyLoading(status) {
     maybeRefreshNames(s.names.named);
   }
 
-  // The swarm is a mirror you can pick, but only while the engine that serves it is switched on —
-  // and that is a separate setting. Greying it out says so where the choice is made, rather than
-  // letting it be picked and quietly answered by HTTP.
-  const sel = $('#mirrorSelect');
+  // There is nothing left to pick between: the three HTTP mirrors have closed and the swarm is the
+  // archive. What is worth saying is when the engine serving it is switched off, because then there
+  // is no source at all and every download will fail for a reason that lives in Settings.
   const engineOff = s.settings && !s.settings.torrentEnabled;
-  const want = s.mirrors.map((m) => m.id + (m.speedBps > 0 ? Math.round(m.speedBps) : '')).join('|')
-             + (engineOff ? '|off' : '');
-  if (sel.dataset.sig !== want) {
-    sel.dataset.sig = want;
-    sel.innerHTML = '';
-    for (const m of s.mirrors) {
-      const o = el('option');
-      o.value = m.id;
-      const dead = m.isTorrent && engineOff;
-      const speed = dead ? ' — engine off'
-        : m.speedBps > 0 ? ` — ${rate(m.speedBps)}`
-        : m.reachable === false ? ' — unreachable' : '';
-      o.textContent = `${m.name} (${m.id})${speed}`;
-      o.selected = m.active;
-      o.disabled = dead;
-      // Browsers are inconsistent about hovering a disabled option, so the reason is in the label
-      // as well as the tooltip.
-      if (dead) o.title = 'The BitTorrent engine is switched off in Settings, so the swarm cannot '
-                        + 'be used as a source. Turn it back on there to pick this.';
-      sel.append(o);
-    }
-  }
+  const seedBox = $('#seedBox');
+  if (seedBox) seedBox.classList.toggle('warn', !!engineOff);
 
   if (s.fileSearch) {
     state.fileIndex = s.fileSearch.running
@@ -621,8 +600,6 @@ function planPanel(s) {
 
   // Alternative to "Download chain": the browser saves the chain into a folder you pick, laid out
   // the way the extractor expects, instead of it going into the app's own archive folder.
-  const webBtn = el('button', 'ghost', 'Download chain using browser');
-  webBtn.title = 'Pick a folder; the chain is saved into blobs/ and dats/ inside it';
 
   // The optimiser leaves out the dats this version never reads, which is usually most of the
   // chain. Someone archiving a depot wants those too, so it can be turned off per download.
@@ -634,7 +611,7 @@ function planPanel(s) {
   fullWrap.title = 'Download every dat in the chain, including the ones this version does not read';
   fullBox.onchange = () => updateSize();
 
-  row.append(vLabel, vSel, crcLabel, crcSel, fullWrap, sizeInfo, planBtn, dlBtn, exBtn, webBtn);
+  row.append(vLabel, vSel, crcLabel, crcSel, fullWrap, sizeInfo, planBtn, dlBtn, exBtn);
   body.append(row);
 
   const out = el('div');
@@ -801,7 +778,6 @@ function planPanel(s) {
   planBtn.onclick = () => doPlan(s.id, +vSel.value, crcSel.value, false);
   dlBtn.onclick = () => doPlan(s.id, +vSel.value, crcSel.value, true);
   exBtn.onclick = () => doExtract(s.id, +vSel.value, crcSel.value);
-  webBtn.onclick = () => doBrowserChain(s.id, +vSel.value, crcSel.value);
 
   return p;
 }
@@ -1157,102 +1133,6 @@ async function loadVersionFiles(depotId, v, host) {
 //
 // The bytes are relayed by this app rather than fetched from the mirror by the page: the mirrors
 // send no Access-Control-Allow-Origin and refuse OPTIONS, so a cross-origin read is impossible.
-async function doBrowserChain(depot, version, blobCrc) {
-  const out = $('#planOut');
-
-  if (!window.showDirectoryPicker) {
-    out.innerHTML = '';
-    out.append(note('warn', 'This browser cannot save into a folder',
-      'Choosing a folder needs the File System Access API, which Chrome, Edge and Opera have and ' +
-      'Firefox and Safari do not. Use "Download chain" instead — that one saves into the ' +
-      'download directory the app already uses.'));
-    return;
-  }
-
-  out.innerHTML = '<div class="muted">resolving chain…</div>';
-
-  let plan;
-  try {
-    plan = await api.post('/api/plan', { depot, version, blobCrc: blobCrc || null });
-    plan = plan.plan ?? plan;
-  } catch (e) {
-    out.innerHTML = '';
-    out.append(note('bad', 'Cannot build the chain', e.message || String(e)));
-    return;
-  }
-
-  if (plan.error || plan.needsChoice) { renderPlan(plan, out); return; }
-
-  let root;
-  try {
-    root = await window.showDirectoryPicker({ mode: 'readwrite', id: 'steam2chain' });
-  } catch {
-    out.innerHTML = '';
-    out.append(note('info', 'Cancelled', 'No folder was chosen, so nothing was downloaded.'));
-    return;
-  }
-
-  // Both subfolders are made up front, so the folder is already in the shape the extractor wants
-  // even if the download is interrupted half way.
-  const dirs = {};
-  for (const name of ['blobs', 'dats']) {
-    dirs[name] = await root.getDirectoryHandle(name, { create: true });
-  }
-
-  out.innerHTML = '';
-  const head = el('div', 'dsub');
-  head.textContent = `Saving ${num(plan.files.length)} file(s) into ${root.name}/`;
-  const bar = el('div', 'rangeprog');
-  const track = el('div', 'bar');
-  const fill = el('i');
-  track.append(fill);
-  const line = el('span', 'hint', 'starting…');
-  bar.append(track, line);
-  out.append(head, bar);
-
-  let done = 0, skipped = 0, failed = 0, saved = 0;
-  const total = plan.files.length;
-
-  for (const f of plan.files) {
-    const dir = dirs[f.dir] ?? dirs[f.kind === 'dat' ? 'dats' : 'blobs'];
-
-    try {
-      // A file already the right size is left alone, which makes the whole thing resumable:
-      // point it at the same folder again and it picks up where it stopped.
-      if (f.size > 0) {
-        try {
-          const existing = await (await dir.getFileHandle(f.name)).getFile();
-          if (existing.size === f.size) { skipped++; done++; continue; }
-        } catch { /* not there yet */ }
-      }
-
-      const res = await fetch(`/api/file/${f.kind === 'dat' ? 'dats' : 'blobs'}/${encodeURIComponent(f.name)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const handle = await dir.getFileHandle(f.name, { create: true });
-      const writable = await handle.createWritable();
-      await res.body.pipeTo(writable);
-
-      saved += f.size > 0 ? f.size : 0;
-      done++;
-    } catch (e) {
-      failed++;
-      done++;
-    }
-
-    fill.style.width = `${Math.round((done / total) * 100)}%`;
-    line.textContent = `${num(done)} / ${num(total)}`
-      + (skipped ? `  ·  ${num(skipped)} already there` : '')
-      + (failed ? `  ·  ${num(failed)} failed` : '');
-  }
-
-  fill.style.width = '100%';
-  line.textContent = `${num(done - failed)} of ${num(total)} file(s) in ${root.name}/`
-    + (saved ? `  ·  ${bytes(saved)} written` : '')
-    + (failed ? `  ·  ${num(failed)} failed` : '');
-
-  out.append(extractHint(root.name));
-}
 
 // Extract runs in the app, not in the page, and the page is never told where the folder it just
 // wrote to actually lives — the picker hands out a handle, not a path. So when the chosen folder
@@ -1706,18 +1586,6 @@ $('#depotList').onscroll = (e) => {
   if (n.scrollTop + n.clientHeight > n.scrollHeight - 400) loadDepots();
 };
 
-$('#mirrorSelect').onchange = async (e) => {
-  await api.post('/api/settings', { mirrorId: e.target.value });
-  refreshState();
-};
-$('#testMirrors').onclick = async (e) => {
-  e.target.disabled = true;
-  e.target.textContent = 'Testing…';
-  try { await api.post('/api/mirrors/test'); } catch { /* results show as unreachable */ }
-  e.target.disabled = false;
-  e.target.textContent = 'Test speed';
-  refreshState();
-};
 
 $('#actToggle').onclick = () => {
   const open = $('#activity').classList.contains('min');
@@ -1831,8 +1699,6 @@ $('#checkUpdate').onclick = async (e) => {
   e.target.textContent = 'Check now';
   refreshState();
 };
-$('#reloadIndex').onclick = () => api.post('/api/index/reload', { refresh: true, sizes: true });
-$('#reloadSizes').onclick = () => api.post('/api/index/sizes');
 
 // ---------------- blobs by depot range ----------------
 

@@ -55,9 +55,19 @@
     <EmbeddedResource Include="depotkeys.txt" LogicalName="Steam2Browser.depotkeys.txt" />
 
     <!--
-      Optional catalog snapshot, produced by the build-index command (see README). When present the
-      app starts with no network at all; without it, it falls back to fetching the index from a
-      mirror. Not committed, so a plain clone still builds.
+      The names the archive cannot tell you itself. depot_labels.tsv puts a product name on nearly
+      every depot and came from a third-party repository; names.jsonl is what this app worked out by
+      reading the manifest inside 4 879 depots' blobs. Both used to be fetched or derived on demand,
+      which needed the mirrors. With those gone, re-deriving names.jsonl would mean pulling 4 879
+      depots' blobs out of the swarm one at a time, so it ships instead.
+    -->
+    <EmbeddedResource Include="depot_labels.tsv" LogicalName="Steam2Browser.depot_labels.tsv" />
+    <EmbeddedResource Include="names.jsonl" Condition="Exists('names.jsonl')" LogicalName="Steam2Browser.names.jsonl" />
+
+    <!--
+      The catalog: every file in the archive with its dates and sizes. It used to be built from the
+      mirrors on each release and left out of the repository; they have closed, so it is committed
+      and this is the only copy there will be.
     -->
     <EmbeddedResource Include="index.bin" Condition="Exists('index.bin')" LogicalName="Steam2Browser.index.bin" />
   </ItemGroup>

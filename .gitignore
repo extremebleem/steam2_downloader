@@ -12,9 +12,11 @@ archive/
 extracted/
 index/
 torrent-data/
-names.jsonl
+# Ignored where the app writes them at runtime, but the copies in Steam2Browser/
+# are committed and embedded: the mirrors they were derived from are gone.
+**/steam2info/names.jsonl
 settings.json
-depot_labels.tsv
+**/steam2info/depot_labels.tsv
 
 # partially downloaded files and the marker a segmented download leaves behind
 *.part

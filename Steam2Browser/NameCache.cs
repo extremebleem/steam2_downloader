@@ -157,9 +157,14 @@ public sealed class NameCache(ArchiveClient client, HttpClient http, LabelSource
     {
         Directory.CreateDirectory(dataDir);
         _path = Path.Combine(dataDir, "names.jsonl");
-        if (!File.Exists(_path)) return;
 
-        foreach (var raw in File.ReadLines(_path))
+        // Falls back to the copy built into the app. Working these names out means reading the
+        // manifest inside each depot's blob, which needed the mirrors; with those gone a fresh
+        // install would otherwise start with no names at all and no way to earn any.
+        IEnumerable<string>? lines = File.Exists(_path) ? File.ReadLines(_path) : EmbeddedLines();
+        if (lines is null) return;
+
+        foreach (var raw in lines)
         {
             // Older caches were written with a BOM on the first line; drop it before parsing.
             var line = raw.TrimStart('﻿');
@@ -178,6 +183,25 @@ public sealed class NameCache(ArchiveClient client, HttpClient http, LabelSource
 
         Recount();
         Status.Message = $"{Status.Cached} depots in cache";
+    }
+
+    /// <summary>The built-in name cache, or null if this build carries none.</summary>
+    private static IEnumerable<string>? EmbeddedLines()
+    {
+        var stream = typeof(NameCache).Assembly
+            .GetManifestResourceStream("Steam2Browser.names.jsonl");
+        if (stream is null) return null;
+
+        return Read(stream);
+
+        static IEnumerable<string> Read(Stream s)
+        {
+            using (s)
+            using (var reader = new StreamReader(s))
+            {
+                while (reader.ReadLine() is { } line) yield return line;
+            }
+        }
     }
 
     private void Recount()

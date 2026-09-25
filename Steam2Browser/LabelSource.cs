@@ -58,7 +58,19 @@ public sealed class LabelSource(HttpClient http)
     public async Task LoadCachedAsync(string dataDir, CancellationToken ct = default)
     {
         string cachePath = Path.Combine(dataDir, CacheFile);
-        if (!File.Exists(cachePath)) return;
+        if (!File.Exists(cachePath))
+        {
+            // The table is fetched from a repository that is nothing to do with this one, so a
+            // build carries its own copy: it names 10 870 of the 10 876 depots, and without it a
+            // first run shows a list of numbers.
+            using var stream = typeof(LabelSource).Assembly
+                .GetManifestResourceStream("Steam2Browser.depot_labels.tsv");
+            if (stream is null) return;
+
+            using var reader = new StreamReader(stream);
+            Apply(await reader.ReadToEndAsync(ct), "built in");
+            return;
+        }
 
         try
         {
